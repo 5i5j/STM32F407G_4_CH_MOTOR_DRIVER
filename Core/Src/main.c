@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "mpu6050.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -48,13 +49,6 @@ UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
-uint8_t rx_data[14];
-int16_t accel_x, accel_y, accel_z;
-int16_t gyro_x, gyro_y, gyro_z;
-int16_t temperature;
-
-volatile uint8_t mpu_data_ready = 0; // (MPU data ready flag)
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -65,8 +59,6 @@ static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_I2C2_Init(void);
 /* USER CODE BEGIN PFP */
-uint8_t MPU6050_Init_Sequence(void);
-
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -133,24 +125,11 @@ int main(void)
     /* USER CODE BEGIN 3 */
     if (mpu_data_ready) {
       mpu_data_ready = 0; // Clear flag
-      uint8_t mpu6050_addr = 0x68 << 1;
-
-      // Safely read 14 bytes starting from ACCEL_XOUT_H (0x3B)
-      HAL_StatusTypeDef status = HAL_I2C_Mem_Read(
-          &hi2c1, mpu6050_addr, 0x3B, I2C_MEMADD_SIZE_8BIT, rx_data, 14, 100);
+      HAL_StatusTypeDef status = MPU6050_Read_Data(&imu_packet);
 
       if (status == HAL_OK) {
         imu_packet.timestamp =
             HAL_GetTick(); // Get current timestamp in milliseconds
-        imu_packet.accel_x = (int16_t)((rx_data[0] << 8) | rx_data[1]);
-        imu_packet.accel_y = (int16_t)((rx_data[2] << 8) | rx_data[3]);
-        imu_packet.accel_z = (int16_t)((rx_data[4] << 8) | rx_data[5]);
-
-        imu_packet.temperature = (int16_t)((rx_data[6] << 8) | rx_data[7]);
-
-        imu_packet.gyro_x = (int16_t)((rx_data[8] << 8) | rx_data[9]);
-        imu_packet.gyro_y = (int16_t)((rx_data[10] << 8) | rx_data[11]);
-        imu_packet.gyro_z = (int16_t)((rx_data[12] << 8) | rx_data[13]);
 
         /// Calculate checksum ( XOR of all bytes except checksum itself )
         uint8_t *packet_bytes = (uint8_t *)&imu_packet;
@@ -379,53 +358,6 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-    if (GPIO_Pin == IMU_ITR_Pin) // Check if the interrupt comes from IMU_ITR (PC4)
-    {
-    	mpu_data_ready = 1; // Set flag when interrupt arrives
-    }
-}
-
-uint8_t MPU6050_Init_Sequence(void)
-{
-    uint8_t mpu6050_addr = 0x68 << 1;
-    uint8_t check_val = 0;
-    uint8_t data;
-    HAL_StatusTypeDef status;
-
-    // 1. Wake up and select X-gyro PLL as clock source (PWR_MGMT_1 register 0x6B = 0x01)
-    data = 0x01;
-    status = HAL_I2C_Mem_Write(&hi2c1, mpu6050_addr, 0x6B, I2C_MEMADD_SIZE_8BIT, &data, 1, 100);
-    if (status != HAL_OK) return 1;
-    HAL_Delay(50); // Wait for PLL to stabilize
-
-    // 2. Verify WHO_AM_I register (0x75 should be 0x68)
-    status = HAL_I2C_Mem_Read(&hi2c1, mpu6050_addr, 0x75, I2C_MEMADD_SIZE_8BIT, &check_val, 1, 100);
-    if (status != HAL_OK || check_val != 0x68) return 2;
-
-    // 3. Configure Digital Low Pass Filter (CONFIG register 0x1A = 0x03 -> 42Hz bandwidth, fixes internal rate to 1kHz)
-    data = 0x03;
-    status = HAL_I2C_Mem_Write(&hi2c1, mpu6050_addr, 0x1A, I2C_MEMADD_SIZE_8BIT, &data, 1, 100);
-    if (status != HAL_OK) return 3;
-
-    // 4. Set Sample Rate Divider (SMPLRT_DIV register 0x19 = 0x13 -> 1000Hz / (1 + 19) = 50Hz)
-    data = 0x13;
-    status = HAL_I2C_Mem_Write(&hi2c1, mpu6050_addr, 0x19, I2C_MEMADD_SIZE_8BIT, &data, 1, 100);
-    if (status != HAL_OK) return 4;
-
-    // 5. Configure Accelerometer Range (ACCEL_CONFIG register 0x1C = 0x00 -> +/- 2g)
-    data = 0x00;
-    status = HAL_I2C_Mem_Write(&hi2c1, mpu6050_addr, 0x1C, I2C_MEMADD_SIZE_8BIT, &data, 1, 100);
-    if (status != HAL_OK) return 5;
-
-    // 6. Enable Data Ready interrupt (INT_ENABLE register 0x38 = 0x01)
-    data = 0x01;
-    status = HAL_I2C_Mem_Write(&hi2c1, mpu6050_addr, 0x38, I2C_MEMADD_SIZE_8BIT, &data, 1, 100);
-    if (status != HAL_OK) return 6;
-
-    return 0; // Initialization successful
-}
 /* USER CODE END 4 */
 
 /**
