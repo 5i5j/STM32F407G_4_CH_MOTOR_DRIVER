@@ -1,0 +1,7 @@
+/Debug/
+*.o
+*.d
+*.su
+*.cyclo
+.settings/
+.vscode/
