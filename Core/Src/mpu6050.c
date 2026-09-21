@@ -11,12 +11,12 @@ volatile uint8_t mpu_data_ready = 0;
 
 static uint8_t mpu6050_rx_data[MPU6050_DATA_LENGTH];
 
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-    if (GPIO_Pin == IMU_ITR_Pin) {
-        mpu_data_ready = 1;
-    }
-}
+//void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+//{
+//    if (GPIO_Pin == IMU_ITR_Pin) {
+//        mpu_data_ready = 1;
+//    }
+//}
 
 HAL_StatusTypeDef MPU6050_Read_Data(IMU_Packet_t *packet)
 {

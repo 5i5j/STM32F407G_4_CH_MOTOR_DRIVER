@@ -20,6 +20,7 @@
 #include "main.h"
 #include "dma.h"
 #include "i2c.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -50,6 +51,7 @@
 
 /* USER CODE BEGIN PV */
 IMU_Packet_t imu_packet;
+volatile uint8_t motor_timer_flag = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -95,13 +97,10 @@ int main(void)
   MX_I2C1_Init();
   MX_USART2_UART_Init();
   MX_I2C2_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
-  uint8_t init_result = MPU6050_Init_Sequence();
-  if (init_result != 0) {
-    // You can put a breakpoint here to see which step failed if init_result !=
-    // 0
-    Error_Handler();
-  }
+  uint8_t imu_init_result = MPU6050_Init_Sequence();
+  (void)imu_init_result;
 
 //  IMU_Packet_t imu_packet;
   imu_packet.header1 = 0xAA;
@@ -111,11 +110,16 @@ int main(void)
   // Initialize motor
   HAL_Delay(200);
   HAL_StatusTypeDef motor_status = Motor_Init();
-  if (motor_status != HAL_OK) {
+  if (motor_status == HAL_OK) {
+    Motor_SetSpeeds((int8_t[4]){-50, 50, 50, 50});
+  }
+  else {
     // Handle motor initialization error
     Error_Handler();
   }
 
+  // 3. start TIM6 timer to trigger the encoder reading
+  HAL_TIM_Base_Start_IT(&htim6);
 
   /* USER CODE END 2 */
 
@@ -126,8 +130,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    Motor_SetSpeeds((int8_t[4]){50, 50, -50, 50}); // Set initial speeds to 50
-    
+    if (motor_timer_flag) {
+      motor_timer_flag = 0;
+      Motor_Update_Callback();
+    }
+
     if (mpu_data_ready) {
       mpu_data_ready = 0; // Clear flag
       HAL_StatusTypeDef status = MPU6050_Read_Data(&imu_packet);
@@ -206,7 +213,13 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+  if (htim->Instance == TIM6) {
+    // Set the flag to indicate that new MPU data is ready
+    motor_timer_flag = 1;
+    mpu_data_ready = 1;
+  }
+}
 /* USER CODE END 4 */
 
 /**
