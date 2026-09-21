@@ -14,11 +14,11 @@
 
 Motor_Status_t g_motor_status = {0};
 
-// 根据你的电机参数调整 (JGB37-520 等电机磁环脉冲 * 减速比)
-#define MOTOR_PPR          44.0f    // 磁环每转脉冲数
-#define GEAR_RATIO         90.0f    // 减速比
-#define PULSES_PER_REV     (MOTOR_PPR * GEAR_RATIO) // 轮子旋转一圈的总脉冲数
-#define SAMPLE_TIME_SEC    0.02f    // TIM6 采样周期: 20ms (50Hz)
+// Encoder counts reported by the motor controller, per motor-shaft revolution.
+#define MOTOR_ENCODER_COUNTS_PER_REV  44.0f
+#define GEAR_RATIO                    90.0f
+#define PULSES_PER_REV \
+    (MOTOR_ENCODER_COUNTS_PER_REV * GEAR_RATIO) // 3960 counts per wheel revolution
 
 /**
   * @brief  初始化电机驱动板（配置电机类型与编码器极性）
@@ -77,13 +77,18 @@ HAL_StatusTypeDef Motor_ReadEncoders(int32_t total_pulses[4])
 void Motor_Update_Callback(void)
 {
     int32_t current_pulses[4] = {0};
+    static uint32_t previous_sample_tick;
+    static uint8_t sample_initialized;
 
     // 1. 记录当前采样的时间戳 (Record current sample timestamp)
-    g_motor_status.timestamp = HAL_GetTick();
-
     // 2. 通过 I2C 读取当前总脉冲数 (Read total pulses via I2C)
     if (Motor_ReadEncoders(current_pulses) == HAL_OK)
     {
+        const uint32_t sample_tick = HAL_GetTick();
+        const uint32_t elapsed_ms = sample_tick - previous_sample_tick;
+        const float elapsed_sec = (float)elapsed_ms / 1000.0f;
+
+        g_motor_status.timestamp = sample_tick;
         for (int i = 0; i < 4; i++)
         {
             // 3. 更新累积脉冲并计算增量 (Update cumulative pulses and calculate delta)
@@ -91,8 +96,17 @@ void Motor_Update_Callback(void)
             g_motor_status.delta_encoder[i] = current_pulses[i] - g_motor_status.last_encoder[i];
             g_motor_status.last_encoder[i] = current_pulses[i];
 
-            // 4. 计算轮速 (Calculate wheel speed in RPM)
-            g_motor_status.speed_rpm[i] = ((float)g_motor_status.delta_encoder[i] / PULSES_PER_REV) * (60.0f / SAMPLE_TIME_SEC);
+            // The first reading has no preceding sample, so it has no speed.
+            if (!sample_initialized || elapsed_ms == 0U) {
+                g_motor_status.speed_rpm[i] = 0.0f;
+            } else {
+                g_motor_status.speed_rpm[i] =
+                    ((float)g_motor_status.delta_encoder[i] / PULSES_PER_REV) *
+                    (60.0f / elapsed_sec);
+            }
         }
+
+        previous_sample_tick = sample_tick;
+        sample_initialized = 1U;
     }
 }

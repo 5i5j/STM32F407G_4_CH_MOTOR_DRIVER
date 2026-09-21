@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include "mpu6050.h"
 #include "motor_driver.h"
+#include "telemetry.h"
 
 /* USER CODE END Includes */
 
@@ -51,12 +52,16 @@
 
 /* USER CODE BEGIN PV */
 IMU_Packet_t imu_packet;
+
+Chassis_Telemetry_Packet_t chassis_packet;
+
 volatile uint8_t motor_timer_flag = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+void I2C1_Force_Reset(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -107,6 +112,10 @@ int main(void)
   imu_packet.header2 = 0x55;
   imu_packet.robot_id = 0x01;
 
+  chassis_packet.header1 = 0xAA;
+  chassis_packet.header2 = 0x55;
+  chassis_packet.robot_id = 0x01;
+
   // Initialize motor
   HAL_Delay(200);
   HAL_StatusTypeDef motor_status = Motor_Init();
@@ -132,35 +141,57 @@ int main(void)
     /* USER CODE BEGIN 3 */
     if (motor_timer_flag) {
       motor_timer_flag = 0;
+
+      // 1. update encoder readings and motor speeds calculation (I2C2)
       Motor_Update_Callback();
-    }
+      chassis_packet.timestamp = HAL_GetTick(); // Get current timestamp in milliseconds
 
-    if (mpu_data_ready) {
-      mpu_data_ready = 0; // Clear flag
-      HAL_StatusTypeDef status = MPU6050_Read_Data(&imu_packet);
+      for (int i = 0; i < 4; i++) {
+        chassis_packet.encoder[i] = g_motor_status.encoder[i];
+        chassis_packet.speed_rpm[i] = g_motor_status.speed_rpm[i];
+      }
 
-      if (status == HAL_OK) {
-        imu_packet.timestamp =
-            HAL_GetTick(); // Get current timestamp in milliseconds
+      // 2. read IMU data (I2C1)
+      if(MPU6050_Read_Data(&imu_packet) == HAL_OK) {
 
-        /// Calculate checksum ( XOR of all bytes except checksum itself )
-        uint8_t *packet_bytes = (uint8_t *)&imu_packet;
-        uint8_t checksum = 0;
-        for (size_t i = 0; i < sizeof(IMU_Packet_t) - 1; i++) {
-          checksum ^= packet_bytes[i];
+        // copy IMU data
+        chassis_packet.accel_x = imu_packet.accel_x;
+        chassis_packet.accel_y = imu_packet.accel_y;
+        chassis_packet.accel_z = imu_packet.accel_z;
+        chassis_packet.gyro_x = imu_packet.gyro_x;
+        chassis_packet.gyro_y = imu_packet.gyro_y;
+        chassis_packet.gyro_z = imu_packet.gyro_z;
+      }
+      else{
+        // IMU read error handling, reset I2C1 bus and reinitialize MPU6050
+        chassis_packet.accel_x = 0;
+        chassis_packet.accel_y = 0;
+        chassis_packet.accel_z = 0;
+        chassis_packet.gyro_x = 0;
+        chassis_packet.gyro_y = 0;
+        chassis_packet.gyro_z = 0;
+
+        // Reset I2C1 bus
+        static uint8_t reset_attempts = 0;
+        reset_attempts++;
+        if (reset_attempts >= 50) {
+          reset_attempts = 0;
+          I2C1_Force_Reset();
+          MPU6050_Init_Sequence();
         }
-        imu_packet.checksum = checksum;
+      }
 
-        // check if serial port is ready to transmit
-        // Transmit the IMU packet over UART when serial port is ready
-        if (huart2.gState == HAL_UART_STATE_READY) {
-          HAL_UART_Transmit_DMA(&huart2, (uint8_t *)&imu_packet, sizeof(IMU_Packet_t));
-        }
-      } else {
-        // Error recovery: if I2C error occurs, reset and re-initialize I2C
-        // peripheral
-        HAL_I2C_DeInit(&hi2c1);
-        MX_I2C1_Init();
+      // 3. calculate checksum
+      uint8_t *packet_bytes = (uint8_t *)&chassis_packet;
+      uint8_t checksum = 0;
+      for (size_t i = 0; i < sizeof(Chassis_Telemetry_Packet_t) - 1; i++) {
+        checksum ^= packet_bytes[i];
+      }
+      chassis_packet.checksum = checksum;
+
+      // 4. send telemetry data over UART2 DMA
+      if (huart2.gState == HAL_UART_STATE_READY) {
+        HAL_UART_Transmit_DMA(&huart2, (uint8_t *)&chassis_packet, sizeof(Chassis_Telemetry_Packet_t));
       }
     }
   }
@@ -219,6 +250,18 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     motor_timer_flag = 1;
     mpu_data_ready = 1;
   }
+}
+
+void I2C1_Force_Reset(void)
+{
+    // 1. 强行复位 I2C1 外设
+    __HAL_RCC_I2C1_FORCE_RESET();
+    HAL_Delay(2);
+    __HAL_RCC_I2C1_RELEASE_RESET();
+
+    // 2. 重新初始化 I2C1 结构体
+    HAL_I2C_DeInit(&hi2c1);
+    MX_I2C1_Init();
 }
 /* USER CODE END 4 */
 
